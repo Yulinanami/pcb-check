@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 
 
@@ -10,36 +9,34 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def parse_args() -> argparse.Namespace:
-    root = project_root()
-    parser = argparse.ArgumentParser(description="Train Ultralytics YOLO on prepared PCB data.")
-    parser.add_argument("--data", type=Path, default=root / "outputs" / "pcb_yolo_dataset" / "dataset.yaml")
-    parser.add_argument("--model", type=str, default="yolov8n.pt")
-    parser.add_argument("--imgsz", type=int, default=1024)
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch", type=int, default=4)
-    parser.add_argument("--device", type=str, default="0")
-    parser.add_argument("--project", type=Path, default=root / "runs" / "train")
-    parser.add_argument("--name", type=str, default="pcb_yolo_baseline")
-    return parser.parse_args()
+ROOT = project_root()
+DATA_YAML = ROOT / "outputs" / "pcb_yolo_dataset" / "dataset.yaml"
+MODEL = "yolov8n.pt"
+IMAGE_SIZE = 1024
+EPOCHS = 50
+BATCH_SIZE = 4
+DEVICE = "0"
+PROJECT_DIR = ROOT / "runs" / "train"
+RUN_NAME = "pcb_yolo_baseline"
+WORKERS = 0
 
 
 def main() -> None:
-    args = parse_args()
-    if not args.data.exists():
-        raise FileNotFoundError(f"Dataset yaml not found: {args.data}\nRun: python scripts/prepare_dataset.py")
+    if not DATA_YAML.exists():
+        raise FileNotFoundError(f"Dataset yaml not found: {DATA_YAML}\nRun: python scripts/prepare_dataset.py")
 
     from ultralytics import YOLO
 
-    model = YOLO(args.model)
+    model = YOLO(MODEL)
     model.train(
-        data=str(args.data),
-        imgsz=args.imgsz,
-        epochs=args.epochs,
-        batch=args.batch,
-        device=args.device,
-        project=str(args.project),
-        name=args.name,
+        data=str(DATA_YAML),
+        imgsz=IMAGE_SIZE,
+        epochs=EPOCHS,
+        batch=BATCH_SIZE,
+        device=DEVICE,
+        workers=WORKERS,
+        project=str(PROJECT_DIR),
+        name=RUN_NAME,
         exist_ok=True,
     )
 

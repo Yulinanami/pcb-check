@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import csv
 import json
 from collections import defaultdict
@@ -22,18 +21,15 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def parse_args() -> argparse.Namespace:
-    root = project_root()
-    parser = argparse.ArgumentParser(description="Evaluate YOLO on PCB test set.")
-    parser.add_argument("--weights", type=Path, default=root / "runs" / "train" / "pcb_yolo_baseline" / "weights" / "best.pt")
-    parser.add_argument("--data", type=Path, default=root / "outputs" / "pcb_yolo_dataset" / "dataset.yaml")
-    parser.add_argument("--output-dir", type=Path, default=root / "outputs" / "eval")
-    parser.add_argument("--imgsz", type=int, default=1024)
-    parser.add_argument("--conf", type=float, default=0.001)
-    parser.add_argument("--iou", type=float, default=0.7)
-    parser.add_argument("--device", type=str, default="0")
-    parser.add_argument("--eval-iou", type=float, default=0.5)
-    return parser.parse_args()
+ROOT = project_root()
+WEIGHTS = ROOT / "runs" / "train" / "pcb_yolo_baseline" / "weights" / "best.pt"
+DATA_YAML = ROOT / "outputs" / "pcb_yolo_dataset" / "dataset.yaml"
+OUTPUT_DIR = ROOT / "outputs" / "eval"
+IMAGE_SIZE = 1024
+CONFIDENCE = 0.001
+NMS_IOU = 0.7
+DEVICE = "0"
+EVAL_IOU = 0.5
 
 
 def load_dataset_paths(data_yaml: Path) -> tuple[Path, Path, list[str]]:
@@ -101,14 +97,14 @@ def compute_ap(recall: np.ndarray, precision: np.ndarray) -> float:
     return float(np.sum((mrec[change_points + 1] - mrec[change_points]) * mpre[change_points + 1]))
 
 
-def collect_predictions(model: Any, image_paths: list[Path], args: argparse.Namespace) -> dict[int, list[dict[str, Any]]]:
+def collect_predictions(model: Any, image_paths: list[Path]) -> dict[int, list[dict[str, Any]]]:
     pred_by_class: dict[int, list[dict[str, Any]]] = defaultdict(list)
     results = model.predict(
         source=[str(path) for path in image_paths],
-        imgsz=args.imgsz,
-        conf=args.conf,
-        iou=args.iou,
-        device=args.device,
+        imgsz=IMAGE_SIZE,
+        conf=CONFIDENCE,
+        iou=NMS_IOU,
+        device=DEVICE,
         verbose=False,
     )
 
@@ -189,13 +185,12 @@ def write_outputs(metrics: dict[str, Any], output_dir: Path) -> None:
 
 
 def main() -> None:
-    args = parse_args()
-    if not args.weights.exists():
-        raise FileNotFoundError(f"Weights not found: {args.weights}")
-    if not args.data.exists():
-        raise FileNotFoundError(f"Dataset yaml not found: {args.data}\nRun: python scripts/prepare_dataset.py")
+    if not WEIGHTS.exists():
+        raise FileNotFoundError(f"Weights not found: {WEIGHTS}")
+    if not DATA_YAML.exists():
+        raise FileNotFoundError(f"Dataset yaml not found: {DATA_YAML}\nRun: python scripts/prepare_dataset.py")
 
-    test_images_dir, test_labels_dir, class_names = load_dataset_paths(args.data)
+    test_images_dir, test_labels_dir, class_names = load_dataset_paths(DATA_YAML)
     image_paths = sorted(path for path in test_images_dir.iterdir() if path.suffix.lower() in IMAGE_SUFFIXES)
     if not image_paths:
         raise FileNotFoundError(f"No test images found in {test_images_dir}")
@@ -203,8 +198,8 @@ def main() -> None:
     from ultralytics import YOLO
 
     gt_by_class = load_ground_truth(image_paths, test_labels_dir)
-    model = YOLO(str(args.weights))
-    pred_by_class = collect_predictions(model, image_paths, args)
+    model = YOLO(str(WEIGHTS))
+    pred_by_class = collect_predictions(model, image_paths)
 
     class_metrics = []
     for class_id, class_name in enumerate(class_names):
@@ -212,23 +207,23 @@ def main() -> None:
             class_id=class_id,
             predictions=pred_by_class.get(class_id, []),
             gt_by_image=gt_by_class.get(class_id, {}),
-            iou_threshold=args.eval_iou,
+            iou_threshold=EVAL_IOU,
         )
         result["class_name"] = class_name
         class_metrics.append(result)
 
     valid_aps = [item["ap"] for item in class_metrics if item["num_gt"] > 0]
     metrics = {
-        "iou_threshold": args.eval_iou,
+        "iou_threshold": EVAL_IOU,
         "mAP": float(np.mean(valid_aps)) if valid_aps else 0.0,
         "num_images": len(image_paths),
         "classes": class_metrics,
     }
-    print(f"mAP@{args.eval_iou:.2f}: {metrics['mAP']:.6f}")
+    print(f"mAP@{EVAL_IOU:.2f}: {metrics['mAP']:.6f}")
     for item in class_metrics:
         print(f"{item['class_name']}: AP={item['ap']:.6f}, GT={item['num_gt']}, Pred={item['num_predictions']}")
 
-    write_outputs(metrics, args.output_dir)
+    write_outputs(metrics, OUTPUT_DIR)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 from typing import Any
 
@@ -27,18 +26,15 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def parse_args() -> argparse.Namespace:
-    root = project_root()
-    parser = argparse.ArgumentParser(description="Draw GT and prediction boxes for PCB detections.")
-    parser.add_argument("--weights", type=Path, default=root / "runs" / "train" / "pcb_yolo_baseline" / "weights" / "best.pt")
-    parser.add_argument("--data", type=Path, default=root / "outputs" / "pcb_yolo_dataset" / "dataset.yaml")
-    parser.add_argument("--output-dir", type=Path, default=root / "outputs" / "visualizations")
-    parser.add_argument("--max-images", type=int, default=10)
-    parser.add_argument("--imgsz", type=int, default=1024)
-    parser.add_argument("--conf", type=float, default=0.25)
-    parser.add_argument("--iou", type=float, default=0.7)
-    parser.add_argument("--device", type=str, default="0")
-    return parser.parse_args()
+ROOT = project_root()
+WEIGHTS = ROOT / "runs" / "train" / "pcb_yolo_baseline" / "weights" / "best.pt"
+DATA_YAML = ROOT / "outputs" / "pcb_yolo_dataset" / "dataset.yaml"
+OUTPUT_DIR = ROOT / "outputs" / "visualizations"
+MAX_IMAGES = 10
+IMAGE_SIZE = 1024
+CONFIDENCE = 0.25
+NMS_IOU = 0.7
+DEVICE = "0"
 
 
 def load_dataset_paths(data_yaml: Path) -> tuple[Path, Path]:
@@ -117,28 +113,27 @@ def draw_predictions(image: np.ndarray, result: Any) -> None:
 
 
 def main() -> None:
-    args = parse_args()
-    if not args.weights.exists():
-        raise FileNotFoundError(f"Weights not found: {args.weights}")
-    if not args.data.exists():
-        raise FileNotFoundError(f"Dataset yaml not found: {args.data}\nRun: python scripts/prepare_dataset.py")
+    if not WEIGHTS.exists():
+        raise FileNotFoundError(f"Weights not found: {WEIGHTS}")
+    if not DATA_YAML.exists():
+        raise FileNotFoundError(f"Dataset yaml not found: {DATA_YAML}\nRun: python scripts/prepare_dataset.py")
 
-    test_images_dir, test_labels_dir = load_dataset_paths(args.data)
+    test_images_dir, test_labels_dir = load_dataset_paths(DATA_YAML)
     image_paths = sorted(path for path in test_images_dir.iterdir() if path.suffix.lower() in IMAGE_SUFFIXES)
-    image_paths = image_paths[: args.max_images]
+    image_paths = image_paths[:MAX_IMAGES]
     if not image_paths:
         raise FileNotFoundError(f"No test images found in {test_images_dir}")
 
     from ultralytics import YOLO
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    model = YOLO(str(args.weights))
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    model = YOLO(str(WEIGHTS))
     results = model.predict(
         source=[str(path) for path in image_paths],
-        imgsz=args.imgsz,
-        conf=args.conf,
-        iou=args.iou,
-        device=args.device,
+        imgsz=IMAGE_SIZE,
+        conf=CONFIDENCE,
+        iou=NMS_IOU,
+        device=DEVICE,
         verbose=False,
     )
 
@@ -149,7 +144,7 @@ def main() -> None:
             continue
         draw_ground_truth(image, test_labels_dir / f"{image_path.stem}.txt")
         draw_predictions(image, result)
-        output_path = args.output_dir / f"{image_path.stem}_gt_pred.jpg"
+        output_path = OUTPUT_DIR / f"{image_path.stem}_gt_pred.jpg"
         cv2.imwrite(str(output_path), image)
         print(f"[DONE] {output_path}")
 

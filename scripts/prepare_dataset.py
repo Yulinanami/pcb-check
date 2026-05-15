@@ -10,7 +10,6 @@ modifying the original data.
 
 from __future__ import annotations
 
-import argparse
 import random
 import shutil
 import xml.etree.ElementTree as ET
@@ -21,7 +20,6 @@ import yaml
 
 
 CLASS_NAMES = ["Mouse_bite", "Open_circuit", "Short", "Spur", "Spurious_copper"]
-CLASS_TO_ID = {name: idx for idx, name in enumerate(CLASS_NAMES)}
 XML_NAME_TO_ID = {
     "mouse_bite": 0,
     "open_circuit": 1,
@@ -30,6 +28,8 @@ XML_NAME_TO_ID = {
     "spurious_copper": 4,
 }
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp"}
+VAL_RATIO = 0.2
+SEED = 42
 
 
 @dataclass(frozen=True)
@@ -46,17 +46,6 @@ class TestSample:
 
 def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
-
-
-def parse_args() -> argparse.Namespace:
-    root = project_root()
-    parser = argparse.ArgumentParser(description="Convert PCB dataset to YOLO format.")
-    parser.add_argument("--train-root", type=Path, default=root / "训练集-PCB_DATASET")
-    parser.add_argument("--test-root", type=Path, default=root / "PCB_瑕疵测试集")
-    parser.add_argument("--output-root", type=Path, default=root / "outputs" / "pcb_yolo_dataset")
-    parser.add_argument("--val-ratio", type=float, default=0.2)
-    parser.add_argument("--seed", type=int, default=42)
-    return parser.parse_args()
 
 
 def voc_xml_to_yolo_lines(xml_path: Path) -> list[str]:
@@ -186,22 +175,23 @@ def write_dataset_yaml(output_root: Path) -> Path:
 
 
 def main() -> None:
-    args = parse_args()
-    if not args.train_root.exists():
-        raise FileNotFoundError(f"Train root not found: {args.train_root}")
-    if not args.test_root.exists():
-        raise FileNotFoundError(f"Test root not found: {args.test_root}")
-    if not 0.0 < args.val_ratio < 1.0:
-        raise ValueError("--val-ratio must be between 0 and 1")
+    root = project_root()
+    train_root = root / "训练集-PCB_DATASET"
+    test_root = root / "PCB_瑕疵测试集"
+    output_root = root / "outputs" / "pcb_yolo_dataset"
 
-    output_root = args.output_root
+    if not train_root.exists():
+        raise FileNotFoundError(f"Train root not found: {train_root}")
+    if not test_root.exists():
+        raise FileNotFoundError(f"Test root not found: {test_root}")
+
     ensure_dirs(output_root)
 
-    train_samples = collect_train_samples(args.train_root)
-    rng = random.Random(args.seed)
+    train_samples = collect_train_samples(train_root)
+    rng = random.Random(SEED)
     rng.shuffle(train_samples)
 
-    val_count = max(1, int(round(len(train_samples) * args.val_ratio)))
+    val_count = max(1, int(round(len(train_samples) * VAL_RATIO)))
     val_samples = train_samples[:val_count]
     final_train_samples = train_samples[val_count:]
 
@@ -210,7 +200,7 @@ def main() -> None:
     for sample in val_samples:
         copy_train_sample(sample, output_root, "val")
 
-    test_samples = collect_test_samples(args.test_root)
+    test_samples = collect_test_samples(test_root)
     for sample in test_samples:
         copy_test_sample(sample, output_root)
 
