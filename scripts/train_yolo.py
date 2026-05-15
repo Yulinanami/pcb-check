@@ -1,42 +1,27 @@
-"""Train a YOLO baseline for PCB defect detection."""
-
-from __future__ import annotations
+"""训练 PCB 瑕疵 YOLO baseline。"""
 
 from pathlib import Path
 
 
-def project_root() -> Path:
-    return Path(__file__).resolve().parents[1]
-
-
-ROOT = project_root()
+ROOT = Path(__file__).resolve().parents[1]
 DATA_YAML = ROOT / "outputs" / "pcb_yolo_dataset" / "dataset.yaml"
-MODEL = "yolov8n.pt"
-IMAGE_SIZE = 1024
-EPOCHS = 50
-BATCH_SIZE = 4
-DEVICE = "0"
-PROJECT_DIR = ROOT / "runs" / "train"
-RUN_NAME = "pcb_yolo_baseline"
-WORKERS = 0
 
 
-def main() -> None:
+def main():
     if not DATA_YAML.exists():
-        raise FileNotFoundError(f"Dataset yaml not found: {DATA_YAML}\nRun: python scripts/prepare_dataset.py")
+        raise FileNotFoundError("请先运行 python scripts/prepare_dataset.py")
 
     from ultralytics import YOLO
 
-    model = YOLO(MODEL)
-    model.train(
+    YOLO("yolov8n.pt").train(
         data=str(DATA_YAML),
-        imgsz=IMAGE_SIZE,
-        epochs=EPOCHS,
-        batch=BATCH_SIZE,
-        device=DEVICE,
-        workers=WORKERS,
-        project=str(PROJECT_DIR),
-        name=RUN_NAME,
+        imgsz=1024,
+        epochs=50,
+        batch=4,
+        device="0",
+        workers=0,
+        project=str(ROOT / "runs" / "train"),
+        name="pcb_yolo_baseline",
         exist_ok=True,
     )
 
