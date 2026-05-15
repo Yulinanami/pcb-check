@@ -15,6 +15,9 @@ TEST_IMAGES = ROOT / "outputs" / "pcb_yolo_dataset" / "images" / "test"
 TEST_LABELS = ROOT / "outputs" / "pcb_yolo_dataset" / "labels" / "test"
 OUT_DIR = ROOT / "outputs" / "eval"
 CLASSES = ["Mouse_bite", "Open_circuit", "Short", "Spur", "Spurious_copper"]
+TILE_SIZE = 512
+TILE_STRIDE = 256
+INFER_SIZE = 1024
 
 
 def label_to_box(line, width, height):
@@ -54,6 +57,39 @@ def iou(box, boxes):
     return inter / np.maximum(area1 + area2 - inter, 1e-9)
 
 
+def tile_starts(length):
+    if length <= TILE_SIZE:
+        return [0]
+    starts = list(range(0, length - TILE_SIZE + 1, TILE_STRIDE))
+    if starts[-1] != length - TILE_SIZE:
+        starts.append(length - TILE_SIZE)
+    return starts
+
+
+def nms_indices(boxes, scores):
+    if len(boxes) == 0:
+        return []
+    boxes = np.asarray(boxes, dtype=np.float32)
+    scores = np.asarray(scores, dtype=np.float32)
+    areas = np.maximum(0, boxes[:, 2] - boxes[:, 0]) * np.maximum(0, boxes[:, 3] - boxes[:, 1])
+    order = scores.argsort()[::-1]
+    keep = []
+    while len(order) > 0:
+        current = order[0]
+        keep.append(int(current))
+        if len(order) == 1:
+            break
+        rest = order[1:]
+        x1 = np.maximum(boxes[current, 0], boxes[rest, 0])
+        y1 = np.maximum(boxes[current, 1], boxes[rest, 1])
+        x2 = np.minimum(boxes[current, 2], boxes[rest, 2])
+        y2 = np.minimum(boxes[current, 3], boxes[rest, 3])
+        inter = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
+        overlap = inter / np.maximum(areas[current] + areas[rest] - inter, 1e-9)
+        order = rest[overlap < 0.5]
+    return keep
+
+
 def ap_from_pr(recall, precision):
     recall = np.concatenate(([0], recall, [1]))
     precision = np.concatenate(([0], precision, [0]))
@@ -65,15 +101,35 @@ def ap_from_pr(recall, precision):
 
 def collect_predictions(model, image_paths):
     predictions = defaultdict(list)
-    results = model.predict([str(path) for path in image_paths], imgsz=1024, conf=0.001, iou=0.7, device="0", verbose=False)
-    for image_path, result in zip(image_paths, results):
-        if result.boxes is None:
-            continue
-        boxes = result.boxes.xyxy.cpu().numpy()
-        confs = result.boxes.conf.cpu().numpy()
-        class_ids = result.boxes.cls.cpu().numpy().astype(int)
-        for box, conf, class_id in zip(boxes, confs, class_ids):
-            predictions[int(class_id)].append({"image": image_path.name, "conf": float(conf), "box": box.astype(np.float32)})
+    for image_path in image_paths:
+        with Image.open(image_path).convert("RGB") as image:
+            width, height = image.size
+            crops = []
+            offsets = []
+            for y in tile_starts(height):
+                for x in tile_starts(width):
+                    crops.append(image.crop((x, y, min(x + TILE_SIZE, width), min(y + TILE_SIZE, height))))
+                    offsets.append((x, y))
+
+            by_class = defaultdict(list)
+            results = model.predict(crops, imgsz=INFER_SIZE, conf=0.001, iou=0.7, device="0", batch=16, verbose=False)
+            for (x, y), result in zip(offsets, results):
+                if result.boxes is None:
+                    continue
+                boxes = result.boxes.xyxy.cpu().numpy()
+                confs = result.boxes.conf.cpu().numpy()
+                class_ids = result.boxes.cls.cpu().numpy().astype(int)
+                for box, conf, class_id in zip(boxes, confs, class_ids):
+                    box = box.astype(np.float32) + np.array([x, y, x, y], dtype=np.float32)
+                    box[[0, 2]] = np.clip(box[[0, 2]], 0, width)
+                    box[[1, 3]] = np.clip(box[[1, 3]], 0, height)
+                    by_class[int(class_id)].append({"image": image_path.name, "conf": float(conf), "box": box})
+
+            for class_id, items in by_class.items():
+                boxes = [item["box"] for item in items]
+                scores = [item["conf"] for item in items]
+                for index in nms_indices(boxes, scores):
+                    predictions[class_id].append(items[index])
     return predictions
 
 
