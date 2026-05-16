@@ -10,7 +10,7 @@ from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[1]
-WEIGHTS = ROOT / "runs" / "train" / "pcb_yolo_baseline" / "weights" / "best.pt"
+WEIGHTS = ROOT / "runs" / "train" / "pcb_yolo_noaug_ft4" / "weights" / "best.pt"
 TEST_IMAGES = ROOT / "outputs" / "pcb_yolo_dataset" / "images" / "test"
 TEST_LABELS = ROOT / "outputs" / "pcb_yolo_dataset" / "labels" / "test"
 OUT_DIR = ROOT / "outputs" / "eval"
@@ -20,7 +20,7 @@ TILE_STRIDE = 256
 INFER_SIZE = 1024
 PRED_CONF = 0.0005
 NMS_IOU = 0.7
-MIN_BOX_SIDE = 8
+MIN_BOX_SIDE = 10
 
 
 def label_to_box(line, width, height):
