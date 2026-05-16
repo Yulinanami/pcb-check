@@ -18,6 +18,9 @@ CLASSES = ["Mouse_bite", "Open_circuit", "Short", "Spur", "Spurious_copper"]
 TILE_SIZE = 512
 TILE_STRIDE = 256
 INFER_SIZE = 1024
+PRED_CONF = 0.0005
+NMS_IOU = 0.7
+MIN_BOX_SIDE = 8
 
 
 def label_to_box(line, width, height):
@@ -86,7 +89,7 @@ def nms_indices(boxes, scores):
         y2 = np.minimum(boxes[current, 3], boxes[rest, 3])
         inter = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
         overlap = inter / np.maximum(areas[current] + areas[rest] - inter, 1e-9)
-        order = rest[overlap < 0.5]
+        order = rest[overlap < NMS_IOU]
     return keep
 
 
@@ -112,7 +115,7 @@ def collect_predictions(model, image_paths):
                     offsets.append((x, y))
 
             by_class = defaultdict(list)
-            results = model.predict(crops, imgsz=INFER_SIZE, conf=0.001, iou=0.7, device="0", batch=16, verbose=False)
+            results = model.predict(crops, imgsz=INFER_SIZE, conf=PRED_CONF, iou=0.7, device="0", batch=16, verbose=False)
             for (x, y), result in zip(offsets, results):
                 if result.boxes is None:
                     continue
@@ -123,6 +126,8 @@ def collect_predictions(model, image_paths):
                     box = box.astype(np.float32) + np.array([x, y, x, y], dtype=np.float32)
                     box[[0, 2]] = np.clip(box[[0, 2]], 0, width)
                     box[[1, 3]] = np.clip(box[[1, 3]], 0, height)
+                    if min(box[2] - box[0], box[3] - box[1]) < MIN_BOX_SIDE:
+                        continue
                     by_class[int(class_id)].append({"image": image_path.name, "conf": float(conf), "box": box})
 
             for class_id, items in by_class.items():

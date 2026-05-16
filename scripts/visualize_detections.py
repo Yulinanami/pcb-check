@@ -16,6 +16,8 @@ COLORS = [(0, 255, 255), (255, 128, 0), (0, 255, 0), (255, 0, 255), (0, 128, 255
 TILE_SIZE = 512
 TILE_STRIDE = 256
 INFER_SIZE = 1024
+NMS_IOU = 0.7
+MIN_BOX_SIDE = 8
 
 
 def yolo_to_box(line, width, height):
@@ -77,7 +79,7 @@ def nms_indices(boxes, scores):
         y2 = np.minimum(boxes[current, 3], boxes[rest, 3])
         inter = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
         overlap = inter / np.maximum(areas[current] + areas[rest] - inter, 1e-9)
-        order = rest[overlap < 0.5]
+        order = rest[overlap < NMS_IOU]
     return keep
 
 
@@ -102,6 +104,8 @@ def predict_tiles(model, image):
             box = box.astype(np.float32) + np.array([x, y, x, y], dtype=np.float32)
             box[[0, 2]] = np.clip(box[[0, 2]], 0, width)
             box[[1, 3]] = np.clip(box[[1, 3]], 0, height)
+            if min(box[2] - box[0], box[3] - box[1]) < MIN_BOX_SIDE:
+                continue
             by_class.setdefault(int(class_id), []).append((box, float(conf)))
 
     predictions = []
