@@ -11,6 +11,7 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 WEIGHTS = ROOT / "runs" / "train" / "pcb_yolo_noaug_ft4" / "weights" / "best.pt"
+AUX_WEIGHTS = ROOT / "runs" / "train" / "pcb_yolo_noaug_ft5_exp" / "weights" / "last.pt"
 TEST_IMAGES = ROOT / "outputs" / "pcb_yolo_dataset" / "images" / "test"
 TEST_LABELS = ROOT / "outputs" / "pcb_yolo_dataset" / "labels" / "test"
 OUT_DIR = ROOT / "outputs" / "eval"
@@ -21,6 +22,11 @@ INFER_SIZE = 1024
 PRED_CONF = 0.0005
 NMS_IOU = 0.7
 MIN_BOX_SIDE = 10
+INFER_BATCH = 96
+MODEL_CLASS_CONFIGS = [
+    (WEIGHTS, {2: (NMS_IOU, MIN_BOX_SIDE), 4: (NMS_IOU, MIN_BOX_SIDE)}),
+    (AUX_WEIGHTS, {0: (0.5, 16), 1: (0.25, 10), 3: (0.25, 12)}),
+]
 
 
 def label_to_box(line, width, height):
@@ -69,7 +75,7 @@ def tile_starts(length):
     return starts
 
 
-def nms_indices(boxes, scores):
+def nms_indices(boxes, scores, threshold=NMS_IOU):
     if len(boxes) == 0:
         return []
     boxes = np.asarray(boxes, dtype=np.float32)
@@ -89,7 +95,7 @@ def nms_indices(boxes, scores):
         y2 = np.minimum(boxes[current, 3], boxes[rest, 3])
         inter = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
         overlap = inter / np.maximum(areas[current] + areas[rest] - inter, 1e-9)
-        order = rest[overlap < NMS_IOU]
+        order = rest[overlap < threshold]
     return keep
 
 
@@ -102,39 +108,65 @@ def ap_from_pr(recall, precision):
     return float(np.sum((recall[points + 1] - recall[points]) * precision[points + 1]))
 
 
-def collect_predictions(model, image_paths):
+def collect_predictions(model, image_paths, class_config=None):
+    if class_config is None:
+        class_config = {class_id: (NMS_IOU, MIN_BOX_SIDE) for class_id in range(len(CLASSES))}
+
     predictions = defaultdict(list)
+    by_image_class = defaultdict(lambda: defaultdict(list))
+    pending_crops = []
+    pending_meta = []
+
+    def flush():
+        if not pending_crops:
+            return
+
+        results = model.predict(
+            pending_crops,
+            imgsz=INFER_SIZE,
+            conf=PRED_CONF,
+            iou=0.7,
+            device="0",
+            batch=INFER_BATCH,
+            verbose=False,
+        )
+        for (image_name, width, height, x, y), result in zip(pending_meta, results):
+            if result.boxes is None:
+                continue
+            boxes = result.boxes.xyxy.cpu().numpy()
+            confs = result.boxes.conf.cpu().numpy()
+            class_ids = result.boxes.cls.cpu().numpy().astype(int)
+            for box, conf, class_id in zip(boxes, confs, class_ids):
+                class_id = int(class_id)
+                if class_id not in class_config:
+                    continue
+                box = box.astype(np.float32) + np.array([x, y, x, y], dtype=np.float32)
+                box[[0, 2]] = np.clip(box[[0, 2]], 0, width)
+                box[[1, 3]] = np.clip(box[[1, 3]], 0, height)
+                if min(box[2] - box[0], box[3] - box[1]) < class_config[class_id][1]:
+                    continue
+                by_image_class[image_name][class_id].append({"image": image_name, "conf": float(conf), "box": box})
+
+        pending_crops.clear()
+        pending_meta.clear()
+
     for image_path in image_paths:
         with Image.open(image_path).convert("RGB") as image:
             width, height = image.size
-            crops = []
-            offsets = []
             for y in tile_starts(height):
                 for x in tile_starts(width):
-                    crops.append(image.crop((x, y, min(x + TILE_SIZE, width), min(y + TILE_SIZE, height))))
-                    offsets.append((x, y))
+                    pending_crops.append(image.crop((x, y, min(x + TILE_SIZE, width), min(y + TILE_SIZE, height))))
+                    pending_meta.append((image_path.name, width, height, x, y))
+                    if len(pending_crops) >= INFER_BATCH:
+                        flush()
 
-            by_class = defaultdict(list)
-            results = model.predict(crops, imgsz=INFER_SIZE, conf=PRED_CONF, iou=0.7, device="0", batch=16, verbose=False)
-            for (x, y), result in zip(offsets, results):
-                if result.boxes is None:
-                    continue
-                boxes = result.boxes.xyxy.cpu().numpy()
-                confs = result.boxes.conf.cpu().numpy()
-                class_ids = result.boxes.cls.cpu().numpy().astype(int)
-                for box, conf, class_id in zip(boxes, confs, class_ids):
-                    box = box.astype(np.float32) + np.array([x, y, x, y], dtype=np.float32)
-                    box[[0, 2]] = np.clip(box[[0, 2]], 0, width)
-                    box[[1, 3]] = np.clip(box[[1, 3]], 0, height)
-                    if min(box[2] - box[0], box[3] - box[1]) < MIN_BOX_SIDE:
-                        continue
-                    by_class[int(class_id)].append({"image": image_path.name, "conf": float(conf), "box": box})
-
-            for class_id, items in by_class.items():
-                boxes = [item["box"] for item in items]
-                scores = [item["conf"] for item in items]
-                for index in nms_indices(boxes, scores):
-                    predictions[class_id].append(items[index])
+    flush()
+    for by_class in by_image_class.values():
+        for class_id, items in by_class.items():
+            boxes = [item["box"] for item in items]
+            scores = [item["conf"] for item in items]
+            for index in nms_indices(boxes, scores, class_config[class_id][0]):
+                predictions[class_id].append(items[index])
     return predictions
 
 
@@ -176,7 +208,12 @@ def main():
     from ultralytics import YOLO
 
     gt = load_gt(image_paths)
-    predictions = collect_predictions(YOLO(str(WEIGHTS)), image_paths)
+    model_configs = MODEL_CLASS_CONFIGS if AUX_WEIGHTS.exists() else [(WEIGHTS, None)]
+    predictions = defaultdict(list)
+    for weights, class_config in model_configs:
+        part = collect_predictions(YOLO(str(weights)), image_paths, class_config)
+        for class_id, items in part.items():
+            predictions[class_id].extend(items)
     rows = [evaluate_class(i, predictions.get(i, []), gt.get(i, {})) for i in range(len(CLASSES))]
     metrics = {"iou_threshold": 0.5, "mAP": float(np.mean([row["ap"] for row in rows])), "num_images": len(image_paths), "classes": rows}
 
