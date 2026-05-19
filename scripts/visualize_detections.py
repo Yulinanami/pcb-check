@@ -8,7 +8,6 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 WEIGHTS = ROOT / "runs" / "train" / "pcb_yolo_noaug_ft4" / "weights" / "best.pt"
-AUX_WEIGHTS = ROOT / "runs" / "train" / "pcb_yolo_noaug_ft5_exp" / "weights" / "last.pt"
 TEST_IMAGES = ROOT / "outputs" / "pcb_yolo_dataset" / "images" / "test"
 TEST_LABELS = ROOT / "outputs" / "pcb_yolo_dataset" / "labels" / "test"
 OUT_DIR = ROOT / "outputs" / "visualizations"
@@ -19,9 +18,11 @@ TILE_STRIDE = 256
 INFER_SIZE = 1024
 NMS_IOU = 0.7
 MIN_BOX_SIDE = 10
-MODEL_CLASS_CONFIGS = [
-    (WEIGHTS, {2: (NMS_IOU, MIN_BOX_SIDE), 4: (NMS_IOU, MIN_BOX_SIDE)}),
-    (AUX_WEIGHTS, {0: (0.5, 16), 1: (0.25, 10), 3: (0.25, 12)}),
+INFER_BATCH = 48
+TILE_CLASS_CONFIGS = [
+    (320, 160, {0: (0.7, 12), 2: (0.7, 10)}),
+    (384, 192, {1: (0.2, 12), 3: (0.6, 10)}),
+    (512, 256, {4: (0.5, 10)}),
 ]
 
 
@@ -55,12 +56,12 @@ def draw_gt(image, label_path):
             draw_box(image, box, class_id, f"G-{SHORT_LABELS[class_id]}", 1)
 
 
-def tile_starts(length):
-    if length <= TILE_SIZE:
+def tile_starts(length, tile_size=TILE_SIZE, tile_stride=TILE_STRIDE):
+    if length <= tile_size:
         return [0]
-    starts = list(range(0, length - TILE_SIZE + 1, TILE_STRIDE))
-    if starts[-1] != length - TILE_SIZE:
-        starts.append(length - TILE_SIZE)
+    starts = list(range(0, length - tile_size + 1, tile_stride))
+    if starts[-1] != length - tile_size:
+        starts.append(length - tile_size)
     return starts
 
 
@@ -88,20 +89,20 @@ def nms_indices(boxes, scores, threshold=NMS_IOU):
     return keep
 
 
-def predict_tiles(model, image, class_config=None):
+def predict_tiles(model, image, tile_size=TILE_SIZE, tile_stride=TILE_STRIDE, class_config=None):
     if class_config is None:
         class_config = {class_id: (NMS_IOU, MIN_BOX_SIDE) for class_id in range(len(SHORT_LABELS))}
 
     height, width = image.shape[:2]
     tiles = []
     offsets = []
-    for y in tile_starts(height):
-        for x in tile_starts(width):
-            tiles.append(image[y : min(y + TILE_SIZE, height), x : min(x + TILE_SIZE, width)])
+    for y in tile_starts(height, tile_size, tile_stride):
+        for x in tile_starts(width, tile_size, tile_stride):
+            tiles.append(image[y : min(y + tile_size, height), x : min(x + tile_size, width)])
             offsets.append((x, y))
 
     by_class = {}
-    results = model.predict(tiles, imgsz=INFER_SIZE, conf=0.25, iou=0.7, device="0", batch=16, verbose=False)
+    results = model.predict(tiles, imgsz=INFER_SIZE, conf=0.25, iou=0.7, device="0", batch=INFER_BATCH, verbose=False)
     for (x, y), result in zip(offsets, results):
         if result.boxes is None:
             continue
@@ -142,8 +143,7 @@ def main():
     from ultralytics import YOLO
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    model_configs = MODEL_CLASS_CONFIGS if AUX_WEIGHTS.exists() else [(WEIGHTS, None)]
-    models = [(YOLO(str(weights)), class_config) for weights, class_config in model_configs]
+    model = YOLO(str(WEIGHTS))
 
     for image_path in image_paths:
         image = cv2.imread(str(image_path))
@@ -151,8 +151,8 @@ def main():
             continue
         draw_gt(image, TEST_LABELS / f"{image_path.stem}.txt")
         predictions = []
-        for model, class_config in models:
-            predictions.extend(predict_tiles(model, image, class_config))
+        for tile_size, tile_stride, class_config in TILE_CLASS_CONFIGS:
+            predictions.extend(predict_tiles(model, image, tile_size, tile_stride, class_config))
         draw_pred(image, predictions)
         output_path = OUT_DIR / f"{image_path.stem}_gt_pred.jpg"
         cv2.imwrite(str(output_path), image)

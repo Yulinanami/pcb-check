@@ -50,30 +50,6 @@ def main():
         )
         weights = ROOT / "runs" / "train" / f"pcb_yolo_noaug_ft{stage}" / "weights" / "best.pt"
 
-    YOLO(str(weights)).train(
-        data=str(DATA_YAML),
-        imgsz=1024,
-        epochs=10,
-        batch=16,
-        device="0",
-        workers=0,
-        cache=True,
-        optimizer="AdamW",
-        lr0=0.0005,
-        lrf=0.1,
-        mosaic=0.0,
-        scale=0.0,
-        translate=0.0,
-        hsv_h=0.0,
-        hsv_s=0.0,
-        hsv_v=0.0,
-        fliplr=0.0,
-        project=str(ROOT / "runs" / "train"),
-        name="pcb_yolo_noaug_ft5_exp",
-        exist_ok=True,
-        plots=False,
-    )
-
 
 if __name__ == "__main__":
     main()

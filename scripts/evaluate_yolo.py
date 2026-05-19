@@ -11,7 +11,6 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 WEIGHTS = ROOT / "runs" / "train" / "pcb_yolo_noaug_ft4" / "weights" / "best.pt"
-AUX_WEIGHTS = ROOT / "runs" / "train" / "pcb_yolo_noaug_ft5_exp" / "weights" / "last.pt"
 TEST_IMAGES = ROOT / "outputs" / "pcb_yolo_dataset" / "images" / "test"
 TEST_LABELS = ROOT / "outputs" / "pcb_yolo_dataset" / "labels" / "test"
 OUT_DIR = ROOT / "outputs" / "eval"
@@ -23,9 +22,10 @@ PRED_CONF = 0.0005
 NMS_IOU = 0.7
 MIN_BOX_SIDE = 10
 INFER_BATCH = 96
-MODEL_CLASS_CONFIGS = [
-    (WEIGHTS, {2: (NMS_IOU, MIN_BOX_SIDE), 4: (NMS_IOU, MIN_BOX_SIDE)}),
-    (AUX_WEIGHTS, {0: (0.5, 16), 1: (0.25, 10), 3: (0.25, 12)}),
+TILE_CLASS_CONFIGS = [
+    (320, 160, {0: (0.7, 12), 2: (0.7, 10)}),
+    (384, 192, {1: (0.2, 12), 3: (0.6, 10)}),
+    (512, 256, {4: (0.5, 10)}),
 ]
 
 
@@ -66,12 +66,12 @@ def iou(box, boxes):
     return inter / np.maximum(area1 + area2 - inter, 1e-9)
 
 
-def tile_starts(length):
-    if length <= TILE_SIZE:
+def tile_starts(length, tile_size=TILE_SIZE, tile_stride=TILE_STRIDE):
+    if length <= tile_size:
         return [0]
-    starts = list(range(0, length - TILE_SIZE + 1, TILE_STRIDE))
-    if starts[-1] != length - TILE_SIZE:
-        starts.append(length - TILE_SIZE)
+    starts = list(range(0, length - tile_size + 1, tile_stride))
+    if starts[-1] != length - tile_size:
+        starts.append(length - tile_size)
     return starts
 
 
@@ -108,7 +108,7 @@ def ap_from_pr(recall, precision):
     return float(np.sum((recall[points + 1] - recall[points]) * precision[points + 1]))
 
 
-def collect_predictions(model, image_paths, class_config=None):
+def collect_predictions(model, image_paths, tile_size=TILE_SIZE, tile_stride=TILE_STRIDE, class_config=None):
     if class_config is None:
         class_config = {class_id: (NMS_IOU, MIN_BOX_SIDE) for class_id in range(len(CLASSES))}
 
@@ -153,9 +153,9 @@ def collect_predictions(model, image_paths, class_config=None):
     for image_path in image_paths:
         with Image.open(image_path).convert("RGB") as image:
             width, height = image.size
-            for y in tile_starts(height):
-                for x in tile_starts(width):
-                    pending_crops.append(image.crop((x, y, min(x + TILE_SIZE, width), min(y + TILE_SIZE, height))))
+            for y in tile_starts(height, tile_size, tile_stride):
+                for x in tile_starts(width, tile_size, tile_stride):
+                    pending_crops.append(image.crop((x, y, min(x + tile_size, width), min(y + tile_size, height))))
                     pending_meta.append((image_path.name, width, height, x, y))
                     if len(pending_crops) >= INFER_BATCH:
                         flush()
@@ -208,10 +208,10 @@ def main():
     from ultralytics import YOLO
 
     gt = load_gt(image_paths)
-    model_configs = MODEL_CLASS_CONFIGS if AUX_WEIGHTS.exists() else [(WEIGHTS, None)]
     predictions = defaultdict(list)
-    for weights, class_config in model_configs:
-        part = collect_predictions(YOLO(str(weights)), image_paths, class_config)
+    model = YOLO(str(WEIGHTS))
+    for tile_size, tile_stride, class_config in TILE_CLASS_CONFIGS:
+        part = collect_predictions(model, image_paths, tile_size, tile_stride, class_config)
         for class_id, items in part.items():
             predictions[class_id].extend(items)
     rows = [evaluate_class(i, predictions.get(i, []), gt.get(i, {})) for i in range(len(CLASSES))]
