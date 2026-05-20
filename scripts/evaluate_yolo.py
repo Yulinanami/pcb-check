@@ -24,7 +24,9 @@ PRED_CONF = 0.0005
 NMS_IOU = 0.7
 MIN_BOX_SIDE = 10
 INFER_BATCH = 96
-DIFF_THRESHOLD = 15
+DIFF_THRESHOLD = 8
+DIFF_BOX_PAD = 1
+DIFF_MAX_COMPONENT_SIDE = 200
 TILE_CLASS_CONFIGS = [
     (320, 160, {0: (0.7, 12), 2: (0.7, 10)}),
     (384, 192, {1: (0.2, 12), 3: (0.6, 10)}),
@@ -102,7 +104,7 @@ def nms_indices(boxes, scores, threshold=NMS_IOU):
     return keep
 
 
-def build_diff_masks(image_paths):
+def build_diff_components(image_paths):
     groups = defaultdict(list)
     for image_path in image_paths:
         match = re.match(r"(\d+)", image_path.stem)
@@ -112,37 +114,64 @@ def build_diff_masks(image_paths):
             gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
         groups[match.group(1)].append((image_path.name, gray))
 
-    masks = {}
+    components = {}
     for items in groups.values():
         stack = np.stack([gray for _, gray in items])
         for index, (image_name, gray) in enumerate(items):
             others = np.delete(stack, index, axis=0)
             if len(others) == 0:
-                masks[image_name] = np.full_like(gray, 255)
+                components[image_name] = {"size": gray.shape, "boxes": []}
                 continue
             ref = np.median(others, axis=0).astype(np.uint8)
             diff = cv2.absdiff(gray, ref)
             diff = cv2.GaussianBlur(diff, (3, 3), 0)
             _, mask = cv2.threshold(diff, DIFF_THRESHOLD, 255, cv2.THRESH_BINARY)
-            masks[image_name] = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
-    return masks
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+            count, _, stats, _ = cv2.connectedComponentsWithStats(mask)
+            boxes = []
+            for component_id in range(1, count):
+                x, y, w, h, area = stats[component_id]
+                if area < 1 or w > DIFF_MAX_COMPONENT_SIDE or h > DIFF_MAX_COMPONENT_SIDE:
+                    continue
+                boxes.append(np.array([x, y, x + w, y + h], dtype=np.float32))
+            components[image_name] = {"size": gray.shape, "boxes": boxes}
+    return components
 
 
-def filter_predictions_by_diff(predictions, diff_masks):
-    filtered = defaultdict(list)
+def overlap_area(box1, box2):
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
+    return max(0, x2 - x1) * max(0, y2 - y1)
+
+
+def adjust_predictions_to_diff_components(predictions, diff_components):
+    adjusted = defaultdict(list)
     for class_id, items in predictions.items():
         for item in items:
-            mask = diff_masks.get(item["image"])
-            if mask is None:
-                filtered[class_id].append(item)
+            data = diff_components.get(item["image"])
+            if data is None:
+                adjusted[class_id].append(item)
                 continue
-            height, width = mask.shape
-            box = item["box"].astype(int)
-            x1, y1 = max(0, box[0]), max(0, box[1])
-            x2, y2 = min(width, box[2]), min(height, box[3])
-            if x2 > x1 and y2 > y1 and np.any(mask[y1:y2, x1:x2] > 0):
-                filtered[class_id].append(item)
-    return filtered
+            hits = [(overlap_area(item["box"], component), component) for component in data["boxes"]]
+            hits = [hit for hit in hits if hit[0] > 0]
+            if not hits:
+                continue
+            height, width = data["size"]
+            box = max(hits, key=lambda hit: hit[0])[1]
+            new_item = dict(item)
+            new_item["box"] = np.array(
+                [
+                    max(0, box[0] - DIFF_BOX_PAD),
+                    max(0, box[1] - DIFF_BOX_PAD),
+                    min(width, box[2] + DIFF_BOX_PAD),
+                    min(height, box[3] + DIFF_BOX_PAD),
+                ],
+                dtype=np.float32,
+            )
+            adjusted[class_id].append(new_item)
+    return adjusted
 
 
 def ap_from_pr(recall, precision):
@@ -260,7 +289,7 @@ def main():
         part = collect_predictions(model, image_paths, tile_size, tile_stride, class_config)
         for class_id, items in part.items():
             predictions[class_id].extend(items)
-    predictions = filter_predictions_by_diff(predictions, build_diff_masks(image_paths))
+    predictions = adjust_predictions_to_diff_components(predictions, build_diff_components(image_paths))
     rows = [evaluate_class(i, predictions.get(i, []), gt.get(i, {})) for i in range(len(CLASSES))]
     metrics = {"iou_threshold": 0.5, "mAP": float(np.mean([row["ap"] for row in rows])), "num_images": len(image_paths), "classes": rows}
 
