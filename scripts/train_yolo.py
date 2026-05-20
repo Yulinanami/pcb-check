@@ -6,11 +6,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DATA_YAML = ROOT / "outputs" / "pcb_yolo_dataset" / "dataset.yaml"
 BASE_MODEL = "yolov8n.pt"
-IMGSZ = 1024
+IMGSZ = 1280
 BASE_EPOCHS = 50
 FT_EPOCHS = 5
 FT_STAGES = 4
-BATCH = 0.90
+BATCH = 32
 DEVICE = "0"
 WORKERS = 2
 
@@ -22,7 +22,6 @@ def main():
     from ultralytics import YOLO
 
     print(f"[INFO] device={DEVICE}, batch={BATCH}, imgsz={IMGSZ}")
-    print(f"[INFO] AutoBatch target CUDA memory utilization: {BATCH * 100:.0f}%")
 
     weights = ROOT / "runs" / "train" / "pcb_yolo_baseline" / "weights" / "best.pt"
     if not weights.exists():
