@@ -2,9 +2,11 @@
 
 import csv
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -22,6 +24,7 @@ PRED_CONF = 0.0005
 NMS_IOU = 0.7
 MIN_BOX_SIDE = 10
 INFER_BATCH = 96
+DIFF_THRESHOLD = 15
 TILE_CLASS_CONFIGS = [
     (320, 160, {0: (0.7, 12), 2: (0.7, 10)}),
     (384, 192, {1: (0.2, 12), 3: (0.6, 10)}),
@@ -97,6 +100,49 @@ def nms_indices(boxes, scores, threshold=NMS_IOU):
         overlap = inter / np.maximum(areas[current] + areas[rest] - inter, 1e-9)
         order = rest[overlap < threshold]
     return keep
+
+
+def build_diff_masks(image_paths):
+    groups = defaultdict(list)
+    for image_path in image_paths:
+        match = re.match(r"(\d+)", image_path.stem)
+        if not match:
+            continue
+        with Image.open(image_path).convert("RGB") as image:
+            gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+        groups[match.group(1)].append((image_path.name, gray))
+
+    masks = {}
+    for items in groups.values():
+        stack = np.stack([gray for _, gray in items])
+        for index, (image_name, gray) in enumerate(items):
+            others = np.delete(stack, index, axis=0)
+            if len(others) == 0:
+                masks[image_name] = np.full_like(gray, 255)
+                continue
+            ref = np.median(others, axis=0).astype(np.uint8)
+            diff = cv2.absdiff(gray, ref)
+            diff = cv2.GaussianBlur(diff, (3, 3), 0)
+            _, mask = cv2.threshold(diff, DIFF_THRESHOLD, 255, cv2.THRESH_BINARY)
+            masks[image_name] = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+    return masks
+
+
+def filter_predictions_by_diff(predictions, diff_masks):
+    filtered = defaultdict(list)
+    for class_id, items in predictions.items():
+        for item in items:
+            mask = diff_masks.get(item["image"])
+            if mask is None:
+                filtered[class_id].append(item)
+                continue
+            height, width = mask.shape
+            box = item["box"].astype(int)
+            x1, y1 = max(0, box[0]), max(0, box[1])
+            x2, y2 = min(width, box[2]), min(height, box[3])
+            if x2 > x1 and y2 > y1 and np.any(mask[y1:y2, x1:x2] > 0):
+                filtered[class_id].append(item)
+    return filtered
 
 
 def ap_from_pr(recall, precision):
@@ -214,6 +260,7 @@ def main():
         part = collect_predictions(model, image_paths, tile_size, tile_stride, class_config)
         for class_id, items in part.items():
             predictions[class_id].extend(items)
+    predictions = filter_predictions_by_diff(predictions, build_diff_masks(image_paths))
     rows = [evaluate_class(i, predictions.get(i, []), gt.get(i, {})) for i in range(len(CLASSES))]
     metrics = {"iou_threshold": 0.5, "mAP": float(np.mean([row["ap"] for row in rows])), "num_images": len(image_paths), "classes": rows}
 
