@@ -1,8 +1,3 @@
-# 项目原始数据与课程资料
-/训练集-PCB_DATASET/
-/PCB_瑕疵测试集/
-/docs/
-
 # Python 缓存与本地环境
 __pycache__/
 *.py[cod]
@@ -10,6 +5,10 @@ __pycache__/
 venv/
 env/
 .ipynb_checkpoints/
+
+# 本地课程资料/非运行文档
+/docs/
+*.md
 
 # 训练、评估、可视化等生成结果
 /runs/
@@ -28,7 +27,8 @@ env/
 *.weights
 *.ckpt
 
-# 系统和编辑器临时文件
+# 压缩包和系统/编辑器临时文件
+*.zip
 .DS_Store
 Thumbs.db
 .vscode/
