@@ -5,6 +5,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import torch
+from torchvision.ops import nms as torch_nms
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,10 +18,14 @@ SHORT_LABELS = ["M", "O", "Sh", "Sp", "Sc"]
 COLORS = [(0, 255, 255), (255, 128, 0), (0, 255, 0), (255, 0, 255), (0, 128, 255)]
 TILE_SIZE = 384
 TILE_STRIDE = 192
+TILE_CONFIGS = [(320, 160), (384, 192)]
 INFER_SIZE = 1024
 NMS_IOU = 0.7
 MIN_BOX_SIDE = 10
-INFER_BATCH = 48
+INFER_BATCH = 96
+PRED_CONF = 0.25
+VIS_LIMIT = 10
+USE_HALF = True
 
 
 def yolo_to_box(line, width, height):
@@ -64,6 +70,14 @@ def tile_starts(length, tile_size=TILE_SIZE, tile_stride=TILE_STRIDE):
 def nms_indices(boxes, scores, threshold=NMS_IOU):
     if len(boxes) == 0:
         return []
+    if torch_nms is not None:
+        with torch.no_grad():
+            keep = torch_nms(
+                torch.as_tensor(np.asarray(boxes), dtype=torch.float32, device="cuda:0"),
+                torch.as_tensor(np.asarray(scores), dtype=torch.float32, device="cuda:0"),
+                float(threshold),
+            )
+        return keep.cpu().numpy().astype(int).tolist()
     boxes = np.asarray(boxes, dtype=np.float32)
     scores = np.asarray(scores, dtype=np.float32)
     areas = np.maximum(0, boxes[:, 2] - boxes[:, 0]) * np.maximum(0, boxes[:, 3] - boxes[:, 1])
@@ -91,7 +105,16 @@ def collect_predictions(model, images):
     by_image_class = defaultdict(lambda: defaultdict(list))
 
     def predict_batch(crops, metas):
-        results = model.predict(crops, imgsz=INFER_SIZE, conf=0.25, iou=0.7, device="0", batch=INFER_BATCH, verbose=False)
+        results = model.predict(
+            crops,
+            imgsz=INFER_SIZE,
+            conf=PRED_CONF,
+            iou=0.7,
+            device="0",
+            batch=INFER_BATCH,
+            half=USE_HALF,
+            verbose=False,
+        )
         for (image_name, width, height, x, y), result in zip(metas, results):
             if result.boxes is None:
                 continue
@@ -111,14 +134,15 @@ def collect_predictions(model, images):
     metas = []
     for image_name, image in images.items():
         height, width = image.shape[:2]
-        for y in tile_starts(height):
-            for x in tile_starts(width):
-                crops.append(image[y : min(y + TILE_SIZE, height), x : min(x + TILE_SIZE, width)])
-                metas.append((image_name, width, height, x, y))
-                if len(crops) >= INFER_BATCH:
-                    predict_batch(crops, metas)
-                    crops.clear()
-                    metas.clear()
+        for tile_size, tile_stride in TILE_CONFIGS:
+            for y in tile_starts(height, tile_size, tile_stride):
+                for x in tile_starts(width, tile_size, tile_stride):
+                    crops.append(image[y : min(y + tile_size, height), x : min(x + tile_size, width)])
+                    metas.append((image_name, width, height, x, y))
+                    if len(crops) >= INFER_BATCH:
+                        predict_batch(crops, metas)
+                        crops.clear()
+                        metas.clear()
 
     if crops:
         predict_batch(crops, metas)
@@ -142,11 +166,13 @@ def main():
     if not WEIGHTS.exists():
         raise FileNotFoundError("没有找到训练权重，请先运行 python scripts/train_yolo.py")
 
-    image_paths = sorted(TEST_IMAGES.glob("*.*"))[:10]
+    image_paths = sorted(TEST_IMAGES.glob("*.*"))[:VIS_LIMIT]
 
     from ultralytics import YOLO
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"[INFO] weights={WEIGHTS}")
+    print(f"[INFO] device=0, pred_conf={PRED_CONF}, infer_batch={INFER_BATCH}, half={USE_HALF}, limit={VIS_LIMIT}")
     model = YOLO(str(WEIGHTS))
     images = {}
 

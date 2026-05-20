@@ -1,10 +1,18 @@
-"""训练 PCB 瑕疵 YOLO baseline。"""
+"""在 Colab T4 上训练 PCB 瑕疵 YOLO 模型。"""
 
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_YAML = ROOT / "outputs" / "pcb_yolo_dataset" / "dataset.yaml"
+BASE_MODEL = "yolov8n.pt"
+IMGSZ = 1024
+BASE_EPOCHS = 50
+FT_EPOCHS = 5
+FT_STAGES = 4
+BATCH = 0.90
+DEVICE = "0"
+WORKERS = 2
 
 
 def main():
@@ -13,29 +21,42 @@ def main():
 
     from ultralytics import YOLO
 
-    YOLO("yolov8n.pt").train(
-        data=str(DATA_YAML),
-        imgsz=1024,
-        epochs=50,
-        batch=16,
-        device="0",
-        workers=2,
-        cache=True,
-        project=str(ROOT / "runs" / "train"),
-        name="pcb_yolo_baseline",
-        exist_ok=True,
-    )
+    print(f"[INFO] device={DEVICE}, batch={BATCH}, imgsz={IMGSZ}")
+    print(f"[INFO] AutoBatch target CUDA memory utilization: {BATCH * 100:.0f}%")
 
     weights = ROOT / "runs" / "train" / "pcb_yolo_baseline" / "weights" / "best.pt"
-    for stage in range(1, 5):
+    if not weights.exists():
+        YOLO(BASE_MODEL).train(
+            data=str(DATA_YAML),
+            imgsz=IMGSZ,
+            epochs=BASE_EPOCHS,
+            batch=BATCH,
+            device=DEVICE,
+            workers=WORKERS,
+            cache=True,
+            amp=True,
+            project=str(ROOT / "runs" / "train"),
+            name="pcb_yolo_baseline",
+            exist_ok=True,
+        )
+
+    weights = ROOT / "runs" / "train" / f"pcb_yolo_noaug_ft{FT_STAGES}" / "weights" / "best.pt"
+    if not weights.exists():
+        weights = ROOT / "runs" / "train" / "pcb_yolo_baseline" / "weights" / "best.pt"
+    for stage in range(1, FT_STAGES + 1):
+        stage_weights = ROOT / "runs" / "train" / f"pcb_yolo_noaug_ft{stage}" / "weights" / "best.pt"
+        if stage_weights.exists():
+            weights = stage_weights
+            continue
         YOLO(str(weights)).train(
             data=str(DATA_YAML),
-            imgsz=1024,
-            epochs=5,
-            batch=16,
-            device="0",
-            workers=0,
+            imgsz=IMGSZ,
+            epochs=FT_EPOCHS,
+            batch=BATCH,
+            device=DEVICE,
+            workers=WORKERS,
             cache=True,
+            amp=True,
             mosaic=0.0,
             scale=0.0,
             translate=0.0,
@@ -49,6 +70,8 @@ def main():
             plots=False,
         )
         weights = ROOT / "runs" / "train" / f"pcb_yolo_noaug_ft{stage}" / "weights" / "best.pt"
+
+    print(f"[DONE] best weights: {weights}")
 
 
 if __name__ == "__main__":

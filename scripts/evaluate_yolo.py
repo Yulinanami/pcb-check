@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+import torch
+from torchvision.ops import nms as torch_nms
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,11 +19,13 @@ OUT_DIR = ROOT / "outputs" / "eval"
 CLASSES = ["Mouse_bite", "Open_circuit", "Short", "Spur", "Spurious_copper"]
 TILE_SIZE = 384
 TILE_STRIDE = 192
+TILE_CONFIGS = [(320, 160), (384, 192)]
 INFER_SIZE = 1024
 PRED_CONF = 0.0005
 NMS_IOU = 0.7
 MIN_BOX_SIDE = 10
-INFER_BATCH = 96
+INFER_BATCH = 128
+USE_HALF = True
 
 
 def label_to_box(line, width, height):
@@ -73,6 +77,14 @@ def tile_starts(length, tile_size=TILE_SIZE, tile_stride=TILE_STRIDE):
 def nms_indices(boxes, scores, threshold=NMS_IOU):
     if len(boxes) == 0:
         return []
+    if torch_nms is not None:
+        with torch.no_grad():
+            keep = torch_nms(
+                torch.as_tensor(np.asarray(boxes), dtype=torch.float32, device="cuda:0"),
+                torch.as_tensor(np.asarray(scores), dtype=torch.float32, device="cuda:0"),
+                float(threshold),
+            )
+        return keep.cpu().numpy().astype(int).tolist()
     boxes = np.asarray(boxes, dtype=np.float32)
     scores = np.asarray(scores, dtype=np.float32)
     areas = np.maximum(0, boxes[:, 2] - boxes[:, 0]) * np.maximum(0, boxes[:, 3] - boxes[:, 1])
@@ -123,6 +135,7 @@ def collect_predictions(model, image_paths, tile_size=TILE_SIZE, tile_stride=TIL
             iou=0.7,
             device="0",
             batch=INFER_BATCH,
+            half=USE_HALF,
             verbose=False,
         )
         for (image_name, width, height, x, y), result in zip(pending_meta, results):
@@ -165,6 +178,23 @@ def collect_predictions(model, image_paths, tile_size=TILE_SIZE, tile_stride=TIL
     return predictions
 
 
+def merge_predictions(parts):
+    merged = defaultdict(list)
+    by_image_class = defaultdict(lambda: defaultdict(list))
+    for part in parts:
+        for class_id, items in part.items():
+            for item in items:
+                by_image_class[item["image"]][class_id].append(item)
+
+    for by_class in by_image_class.values():
+        for class_id, items in by_class.items():
+            boxes = [item["box"] for item in items]
+            scores = [item["conf"] for item in items]
+            for index in nms_indices(boxes, scores, NMS_IOU):
+                merged[class_id].append(items[index])
+    return merged
+
+
 def evaluate_class(class_id, predictions, gt_by_image):
     total_gt = sum(len(boxes) for boxes in gt_by_image.values())
     predictions = sorted(predictions, key=lambda item: item["conf"], reverse=True)
@@ -202,12 +232,13 @@ def main():
 
     from ultralytics import YOLO
 
+    print(f"[INFO] weights={WEIGHTS}")
+    print(f"[INFO] device=0, pred_conf={PRED_CONF}, infer_batch={INFER_BATCH}, half={USE_HALF}")
     gt = load_gt(image_paths)
-    predictions = defaultdict(list)
     model = YOLO(str(WEIGHTS))
-    part = collect_predictions(model, image_paths)
-    for class_id, items in part.items():
-        predictions[class_id].extend(items)
+    predictions = merge_predictions(
+        [collect_predictions(model, image_paths, tile_size=tile_size, tile_stride=tile_stride) for tile_size, tile_stride in TILE_CONFIGS]
+    )
     rows = [evaluate_class(i, predictions.get(i, []), gt.get(i, {})) for i in range(len(CLASSES))]
     metrics = {"iou_threshold": 0.5, "mAP": float(np.mean([row["ap"] for row in rows])), "num_images": len(image_paths), "classes": rows}
 

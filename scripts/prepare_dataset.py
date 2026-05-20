@@ -57,6 +57,9 @@ def save_sample(image_path, label_lines, split):
 
 
 def main():
+    if OUT_ROOT.exists():
+        shutil.rmtree(OUT_ROOT)
+
     for split in ["train", "val", "test"]:
         (OUT_ROOT / "images" / split).mkdir(parents=True, exist_ok=True)
         (OUT_ROOT / "labels" / split).mkdir(parents=True, exist_ok=True)
