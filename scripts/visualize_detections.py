@@ -1,6 +1,5 @@
 """画出测试集 GT 框和预测框。"""
 
-import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -15,20 +14,12 @@ TEST_LABELS = ROOT / "outputs" / "pcb_yolo_dataset" / "labels" / "test"
 OUT_DIR = ROOT / "outputs" / "visualizations"
 SHORT_LABELS = ["M", "O", "Sh", "Sp", "Sc"]
 COLORS = [(0, 255, 255), (255, 128, 0), (0, 255, 0), (255, 0, 255), (0, 128, 255)]
-TILE_SIZE = 512
-TILE_STRIDE = 256
+TILE_SIZE = 384
+TILE_STRIDE = 192
 INFER_SIZE = 1024
 NMS_IOU = 0.7
 MIN_BOX_SIDE = 10
 INFER_BATCH = 48
-DIFF_THRESHOLD = 8
-DIFF_BOX_PAD = 1
-DIFF_MAX_COMPONENT_SIDE = 200
-TILE_CLASS_CONFIGS = [
-    (320, 160, {0: (0.7, 12), 2: (0.7, 10)}),
-    (384, 192, {1: (0.2, 12), 3: (0.6, 10)}),
-    (512, 256, {4: (0.5, 10)}),
-]
 
 
 def yolo_to_box(line, width, height):
@@ -94,119 +85,50 @@ def nms_indices(boxes, scores, threshold=NMS_IOU):
     return keep
 
 
-def build_diff_components(images):
-    groups = defaultdict(list)
-    for image_name, image in images.items():
-        match = re.match(r"(\d+)", Path(image_name).stem)
-        if match:
-            groups[match.group(1)].append((image_name, cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)))
-
-    components = {}
-    for items in groups.values():
-        stack = np.stack([gray for _, gray in items])
-        for index, (image_name, gray) in enumerate(items):
-            others = np.delete(stack, index, axis=0)
-            if len(others) == 0:
-                components[image_name] = {"size": gray.shape, "boxes": []}
-                continue
-            ref = np.median(others, axis=0).astype(np.uint8)
-            diff = cv2.absdiff(gray, ref)
-            diff = cv2.GaussianBlur(diff, (3, 3), 0)
-            _, mask = cv2.threshold(diff, DIFF_THRESHOLD, 255, cv2.THRESH_BINARY)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
-            count, _, stats, _ = cv2.connectedComponentsWithStats(mask)
-            boxes = []
-            for component_id in range(1, count):
-                x, y, w, h, area = stats[component_id]
-                if area < 1 or w > DIFF_MAX_COMPONENT_SIDE or h > DIFF_MAX_COMPONENT_SIDE:
-                    continue
-                boxes.append(np.array([x, y, x + w, y + h], dtype=np.float32))
-            components[image_name] = {"size": gray.shape, "boxes": boxes}
-    return components
-
-
-def overlap_area(box1, box2):
-    x1 = max(box1[0], box2[0])
-    y1 = max(box1[1], box2[1])
-    x2 = min(box1[2], box2[2])
-    y2 = min(box1[3], box2[3])
-    return max(0, x2 - x1) * max(0, y2 - y1)
-
-
-def adjust_predictions_to_diff_components(predictions_by_image, diff_components):
-    adjusted = defaultdict(list)
-    for image_name, predictions in predictions_by_image.items():
-        data = diff_components.get(image_name)
-        if data is None:
-            adjusted[image_name].extend(predictions)
-            continue
-        for box, conf, class_id in predictions:
-            hits = [(overlap_area(box, component), component) for component in data["boxes"]]
-            hits = [hit for hit in hits if hit[0] > 0]
-            if not hits:
-                continue
-            height, width = data["size"]
-            component = max(hits, key=lambda hit: hit[0])[1]
-            adjusted_box = np.array(
-                [
-                    max(0, component[0] - DIFF_BOX_PAD),
-                    max(0, component[1] - DIFF_BOX_PAD),
-                    min(width, component[2] + DIFF_BOX_PAD),
-                    min(height, component[3] + DIFF_BOX_PAD),
-                ],
-                dtype=np.float32,
-            )
-            adjusted[image_name].append((adjusted_box, conf, class_id))
-    return adjusted
-
-
 def collect_predictions(model, images):
     predictions_by_image = defaultdict(list)
 
-    for tile_size, tile_stride, class_config in TILE_CLASS_CONFIGS:
-        by_image_class = defaultdict(lambda: defaultdict(list))
+    by_image_class = defaultdict(lambda: defaultdict(list))
 
-        def predict_batch(crops, metas):
-            results = model.predict(crops, imgsz=INFER_SIZE, conf=0.25, iou=0.7, device="0", batch=INFER_BATCH, verbose=False)
-            for (image_name, width, height, x, y), result in zip(metas, results):
-                if result.boxes is None:
+    def predict_batch(crops, metas):
+        results = model.predict(crops, imgsz=INFER_SIZE, conf=0.25, iou=0.7, device="0", batch=INFER_BATCH, verbose=False)
+        for (image_name, width, height, x, y), result in zip(metas, results):
+            if result.boxes is None:
+                continue
+            boxes = result.boxes.xyxy.cpu().numpy()
+            confs = result.boxes.conf.cpu().numpy()
+            class_ids = result.boxes.cls.cpu().numpy().astype(int)
+            for box, conf, class_id in zip(boxes, confs, class_ids):
+                class_id = int(class_id)
+                box = box.astype(np.float32) + np.array([x, y, x, y], dtype=np.float32)
+                box[[0, 2]] = np.clip(box[[0, 2]], 0, width)
+                box[[1, 3]] = np.clip(box[[1, 3]], 0, height)
+                if min(box[2] - box[0], box[3] - box[1]) < MIN_BOX_SIDE:
                     continue
-                boxes = result.boxes.xyxy.cpu().numpy()
-                confs = result.boxes.conf.cpu().numpy()
-                class_ids = result.boxes.cls.cpu().numpy().astype(int)
-                for box, conf, class_id in zip(boxes, confs, class_ids):
-                    class_id = int(class_id)
-                    if class_id not in class_config:
-                        continue
-                    box = box.astype(np.float32) + np.array([x, y, x, y], dtype=np.float32)
-                    box[[0, 2]] = np.clip(box[[0, 2]], 0, width)
-                    box[[1, 3]] = np.clip(box[[1, 3]], 0, height)
-                    if min(box[2] - box[0], box[3] - box[1]) < class_config[class_id][1]:
-                        continue
-                    by_image_class[image_name][class_id].append((box, float(conf)))
+                by_image_class[image_name][class_id].append((box, float(conf)))
 
-        crops = []
-        metas = []
-        for image_name, image in images.items():
-            height, width = image.shape[:2]
-            for y in tile_starts(height, tile_size, tile_stride):
-                for x in tile_starts(width, tile_size, tile_stride):
-                    crops.append(image[y : min(y + tile_size, height), x : min(x + tile_size, width)])
-                    metas.append((image_name, width, height, x, y))
-                    if len(crops) >= INFER_BATCH:
-                        predict_batch(crops, metas)
-                        crops.clear()
-                        metas.clear()
+    crops = []
+    metas = []
+    for image_name, image in images.items():
+        height, width = image.shape[:2]
+        for y in tile_starts(height):
+            for x in tile_starts(width):
+                crops.append(image[y : min(y + TILE_SIZE, height), x : min(x + TILE_SIZE, width)])
+                metas.append((image_name, width, height, x, y))
+                if len(crops) >= INFER_BATCH:
+                    predict_batch(crops, metas)
+                    crops.clear()
+                    metas.clear()
 
-        if crops:
-            predict_batch(crops, metas)
+    if crops:
+        predict_batch(crops, metas)
 
-        for image_name, by_class in by_image_class.items():
-            for class_id, items in by_class.items():
-                boxes = [item[0] for item in items]
-                scores = [item[1] for item in items]
-                for index in nms_indices(boxes, scores, class_config[class_id][0]):
-                    predictions_by_image[image_name].append((boxes[index], scores[index], class_id))
+    for image_name, by_class in by_image_class.items():
+        for class_id, items in by_class.items():
+            boxes = [item[0] for item in items]
+            scores = [item[1] for item in items]
+            for index in nms_indices(boxes, scores):
+                predictions_by_image[image_name].append((boxes[index], scores[index], class_id))
 
     return predictions_by_image
 
@@ -234,10 +156,7 @@ def main():
             continue
         images[image_path.name] = image
 
-    predictions_by_image = adjust_predictions_to_diff_components(
-        collect_predictions(model, images),
-        build_diff_components(images),
-    )
+    predictions_by_image = collect_predictions(model, images)
 
     for image_path in image_paths:
         image = images.get(image_path.name)
