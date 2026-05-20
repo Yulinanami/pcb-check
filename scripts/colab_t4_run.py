@@ -35,7 +35,10 @@ def zip_results():
 
 def main():
     print(f"[INFO] project root: {ROOT}")
-    prepare_dataset.main()
+    if train_yolo.DATA_YAML.exists():
+        print(f"[INFO] dataset exists, skip prepare: {train_yolo.DATA_YAML}")
+    else:
+        prepare_dataset.main()
     train_yolo.main()
     evaluate_yolo.main()
     visualize_detections.main()
