@@ -63,6 +63,10 @@ def ap_from_pr(recall, precision):
     return float(np.sum((recall[points + 1] - recall[points]) * precision[points + 1]))
 
 
+def safe_div(numerator, denominator):
+    return float(numerator / denominator) if denominator else 0.0
+
+
 def collect_predictions(model, image_paths):
     predictions = defaultdict(list)
     results = model.predict([str(path) for path in image_paths], imgsz=1024, conf=0.001, iou=0.7, device="0", verbose=False)
@@ -102,7 +106,25 @@ def evaluate_class(class_id, predictions, gt_by_image):
         recall = np.cumsum(tp) / total_gt
         precision = np.cumsum(tp) / np.maximum(np.cumsum(tp) + np.cumsum(fp), 1e-9)
         ap = ap_from_pr(recall, precision)
-    return {"class_id": class_id, "class_name": CLASSES[class_id], "num_gt": int(total_gt), "num_predictions": len(predictions), "ap": ap}
+    tp_count = int(tp.sum())
+    fp_count = int(fp.sum())
+    fn_count = int(total_gt - tp_count)
+    precision = safe_div(tp_count, tp_count + fp_count)
+    recall = safe_div(tp_count, total_gt)
+    f1 = safe_div(2 * precision * recall, precision + recall)
+    return {
+        "class_id": class_id,
+        "class_name": CLASSES[class_id],
+        "num_gt": int(total_gt),
+        "num_predictions": len(predictions),
+        "tp": tp_count,
+        "fp": fp_count,
+        "fn": fn_count,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "ap": ap,
+    }
 
 
 def main():
@@ -117,18 +139,68 @@ def main():
     gt = load_gt(image_paths)
     predictions = collect_predictions(YOLO(str(WEIGHTS)), image_paths)
     rows = [evaluate_class(i, predictions.get(i, []), gt.get(i, {})) for i in range(len(CLASSES))]
-    metrics = {"iou_threshold": 0.5, "mAP": float(np.mean([row["ap"] for row in rows])), "num_images": len(image_paths), "classes": rows}
+    total_gt = sum(row["num_gt"] for row in rows)
+    total_predictions = sum(row["num_predictions"] for row in rows)
+    total_tp = sum(row["tp"] for row in rows)
+    total_fp = sum(row["fp"] for row in rows)
+    total_fn = sum(row["fn"] for row in rows)
+    micro_precision = safe_div(total_tp, total_tp + total_fp)
+    micro_recall = safe_div(total_tp, total_gt)
+    micro_f1 = safe_div(2 * micro_precision * micro_recall, micro_precision + micro_recall)
+    metrics = {
+        "iou_threshold": 0.5,
+        "mAP": float(np.mean([row["ap"] for row in rows])),
+        "num_images": len(image_paths),
+        "total_gt": int(total_gt),
+        "total_predictions": int(total_predictions),
+        "total_tp": int(total_tp),
+        "total_fp": int(total_fp),
+        "total_fn": int(total_fn),
+        "macro_precision": float(np.mean([row["precision"] for row in rows])),
+        "macro_recall": float(np.mean([row["recall"] for row in rows])),
+        "macro_f1": float(np.mean([row["f1"] for row in rows])),
+        "micro_precision": micro_precision,
+        "micro_recall": micro_recall,
+        "micro_f1": micro_f1,
+        "classes": rows,
+    }
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUT_DIR / "metrics_iou50.json").write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     with (OUT_DIR / "metrics_iou50.csv").open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=["class_id", "class_name", "num_gt", "num_predictions", "ap"])
+        writer = csv.DictWriter(
+            file,
+            fieldnames=[
+                "class_id",
+                "class_name",
+                "num_gt",
+                "num_predictions",
+                "tp",
+                "fp",
+                "fn",
+                "precision",
+                "recall",
+                "f1",
+                "ap",
+            ],
+        )
         writer.writeheader()
         writer.writerows(rows)
 
     print(f"mAP@0.5: {metrics['mAP']:.6f}")
+    print(
+        "Overall: "
+        f"GT={metrics['total_gt']}, Pred={metrics['total_predictions']}, "
+        f"TP={metrics['total_tp']}, FP={metrics['total_fp']}, FN={metrics['total_fn']}, "
+        f"P={metrics['micro_precision']:.6f}, R={metrics['micro_recall']:.6f}, F1={metrics['micro_f1']:.6f}"
+    )
     for row in rows:
-        print(f"{row['class_name']}: AP={row['ap']:.6f}, GT={row['num_gt']}, Pred={row['num_predictions']}")
+        print(
+            f"{row['class_name']}: "
+            f"AP={row['ap']:.6f}, GT={row['num_gt']}, Pred={row['num_predictions']}, "
+            f"TP={row['tp']}, FP={row['fp']}, FN={row['fn']}, "
+            f"P={row['precision']:.6f}, R={row['recall']:.6f}, F1={row['f1']:.6f}"
+        )
 
 
 if __name__ == "__main__":
