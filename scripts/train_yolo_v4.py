@@ -9,7 +9,7 @@ IMGSZ = 640
 EPOCHS = 20
 BATCH = 8        # 1536 tile 在 GPU 上较大，batch 调小
 DEVICE = "0"
-WORKERS = 2
+WORKERS = 0          # 避免 Windows 多进程内存崩溃
 RUN_NAME = "pcb_v4_scale"
 
 
@@ -38,7 +38,7 @@ def main():
         close_mosaic=5,
         mixup=0.1,
         hsv_h=0.015,
-        hsv_s=0.5,
+        hsv_s=1.0,           # 最大饱和度扰动，去除板间颜色差异
         hsv_v=0.3,
         # ── 训练调度 ──
         patience=10,

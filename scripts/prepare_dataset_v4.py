@@ -29,7 +29,7 @@ TRAIN_TILE = 1536   # 训练 tile 大小（YOLO 会缩到 640，缺陷 72→30px
 TEST_TILE = 640      # 测试 tile 大小（不缩放，缺陷 25px）
 TRAIN_OVERLAP = 0.5
 TEST_OVERLAP = 0.5
-NEG_RATIO = 1.0
+NEG_RATIO = 3.0        # 3 倍负样本，让模型多看正常电路纹理
 
 
 def imread_safe(path):
