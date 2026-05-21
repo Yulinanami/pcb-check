@@ -56,6 +56,10 @@ def save_sample(image_path, label_lines, split):
     )
 
 
+def group_key(class_name, image_path):
+    return class_name, image_path.stem.split("_", 1)[0]
+
+
 def main():
     if OUT_ROOT.exists():
         shutil.rmtree(OUT_ROOT)
@@ -64,7 +68,7 @@ def main():
         (OUT_ROOT / "images" / split).mkdir(parents=True, exist_ok=True)
         (OUT_ROOT / "labels" / split).mkdir(parents=True, exist_ok=True)
 
-    samples = []
+    groups = {}
     for class_name in CLASSES:
         for xml_path in sorted((TRAIN_ROOT / "Annotations" / class_name).glob("*.xml")):
             xml_root = ET.parse(xml_path).getroot()
@@ -72,12 +76,31 @@ def main():
             if not image_path.exists():
                 print(f"[WARNING] Missing train image: {image_path}")
                 continue
-            samples.append((image_path, xml_to_yolo_lines(xml_path)))
+            key = group_key(class_name, image_path)
+            groups.setdefault(key, []).append((image_path, xml_to_yolo_lines(xml_path)))
 
-    random.Random(42).shuffle(samples)
-    val_count = round(len(samples) * 0.2)
-    for i, (image_path, label_lines) in enumerate(samples):
-        save_sample(image_path, label_lines, "val" if i < val_count else "train")
+    rng = random.Random(42)
+    val_groups = set()
+    for class_name in CLASSES:
+        class_groups = sorted(key for key in groups if key[0] == class_name)
+        rng.shuffle(class_groups)
+        val_group_count = max(1, round(len(class_groups) * 0.2)) if len(class_groups) > 1 else 0
+        val_groups.update(class_groups[:val_group_count])
+
+    train_groups = set(groups) - val_groups
+    if train_groups & val_groups:
+        raise RuntimeError("train/val group leakage detected")
+
+    train_count = 0
+    val_count = 0
+    for key in sorted(groups):
+        split = "val" if key in val_groups else "train"
+        for image_path, label_lines in groups[key]:
+            save_sample(image_path, label_lines, split)
+            if split == "val":
+                val_count += 1
+            else:
+                train_count += 1
 
     test_count = 0
     for class_name in CLASSES:
@@ -99,16 +122,18 @@ def main():
         f'path: "{OUT_ROOT.resolve().as_posix()}"\n'
         "train: images/train\n"
         "val: images/val\n"
-        "test: images/test\n"
         f"names:\n{names}\n",
         encoding="utf-8",
     )
 
     print("[DONE] YOLO dataset prepared.")
-    print(f"Train images: {len(samples) - val_count}")
+    print(f"Train groups: {len(train_groups)}")
+    print(f"Val groups:   {len(val_groups)}")
+    print(f"Train images: {train_count}")
     print(f"Val images:   {val_count}")
     print(f"Test images:  {test_count}")
 
 
 if __name__ == "__main__":
     main()
+
