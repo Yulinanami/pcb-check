@@ -6,9 +6,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DATA_YAML = ROOT / "outputs" / "pcb_yolo_dataset" / "dataset.yaml"
 MODEL = "yolov8s.pt"
-IMGSZ = 1280
+IMGSZ = 1536
 EPOCHS = 50
-BATCH = 8
+BATCH = 6
 DEVICE = "0"
 WORKERS = 2
 RUN_NAME = "pcb_yolo_true_train"
@@ -32,6 +32,8 @@ def main():
         device=DEVICE,
         workers=WORKERS,
         cache=True,
+        scale=0.9,
+        close_mosaic=0,
         project=str(ROOT / "runs" / "train"),
         name=RUN_NAME,
         exist_ok=True,
