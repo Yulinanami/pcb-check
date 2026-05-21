@@ -35,11 +35,17 @@ NEG_RATIO = 3.0
 # ═══════════════════ 预处理 ═══════════════════
 
 def normalize_board(image):
-    """灰度 + CLAHE：消除板间颜色/纹理差异，保留结构特征。"""
+    """三通道结构特征：[灰度, CLAHE, Canny边缘]。
+    
+    Ch0: 灰度 — 原始亮度结构
+    Ch1: CLAHE — 对比度归一化，突出细节
+    Ch2: Canny边缘 — 纯结构轮廓，完全消除纹理
+    """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
-    return cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+    edges = cv2.Canny(cv2.GaussianBlur(gray, (3, 3), 0), 50, 150)
+    return cv2.merge([gray, enhanced, edges])
 
 
 # ═══════════════════ 工具函数 ═══════════════════
