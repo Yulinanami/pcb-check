@@ -21,12 +21,11 @@ OVERLAP = 0.5
 
 
 def normalize_board(image):
-    """与训练相同：三通道 [灰度, CLAHE, Canny边缘]。"""
+    """与训练相同：灰度 + CLAHE。"""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
-    edges = cv2.Canny(cv2.GaussianBlur(gray, (3, 3), 0), 50, 150)
-    return cv2.merge([gray, enhanced, edges])
+    return cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
 
 
 def imread_safe(path):

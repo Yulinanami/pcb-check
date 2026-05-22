@@ -4,10 +4,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_YAML = ROOT / "outputs" / "pcb_yolo_dataset_v5" / "dataset.yaml"
-MODEL = "yolov8s.pt"
+MODEL = "yolov8m.pt"
 IMGSZ = 640
-EPOCHS = 20
-BATCH = 8
+EPOCHS = 40
+BATCH = 12       # GPU 余量充足，加大 batch 加速训练
 DEVICE = "0"
 WORKERS = 0
 RUN_NAME = "pcb_v5_edge"
